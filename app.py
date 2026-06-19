@@ -243,9 +243,11 @@ def debug():
     return jsonify(info)
 
 
+# Start bot in background thread (runs on import, for Gunicorn)
+t = threading.Thread(target=run_bot_background, daemon=True)
+t.start()
+
 if __name__ == "__main__":
-    t = threading.Thread(target=run_bot_background, daemon=True)
-    t.start()
     import time
     time.sleep(2)
     print(f"Bot running: {bot_running}")
