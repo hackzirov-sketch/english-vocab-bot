@@ -1,37 +1,42 @@
 import os
+import sys
 import platform
 import asyncio
 import threading
-import sqlite3
+import traceback
+from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, jsonify
 
 app = Flask(__name__)
 
 bot_running = False
 bot_start_time = None
+bot_error = None
 
 
 def run_bot_background():
-    global bot_running, bot_start_time
-    from datetime import datetime
+    global bot_running, bot_start_time, bot_error
     bot_start_time = datetime.now()
+    bot_error = None
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     import bot as bot_module
 
     async def start():
+        global bot_running
         await bot_module.bot.delete_webhook(drop_pending_updates=True)
         print("Webhook deleted, starting polling...")
+        bot_running = True
         await bot_module.main()
 
     try:
         loop.run_until_complete(start())
     except Exception as e:
+        bot_error = traceback.format_exc()
         print(f"Bot error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(bot_error)
     finally:
         bot_running = False
 
@@ -83,20 +88,26 @@ INDEX_HTML = """
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            background: rgba(74,222,128,0.15);
-            color: #4ade80;
             padding: 8px 20px;
             border-radius: 100px;
             font-size: 14px;
             font-weight: 500;
             margin-bottom: 32px;
         }
+        .status.ok {
+            background: rgba(74,222,128,0.15);
+            color: #4ade80;
+        }
+        .status.err {
+            background: rgba(248,113,113,0.15);
+            color: #f87171;
+        }
         .status .dot {
             width: 8px; height: 8px;
-            background: #4ade80;
             border-radius: 50%;
-            animation: pulse 1.5s infinite;
         }
+        .status.ok .dot { background: #4ade80; animation: pulse 1.5s infinite; }
+        .status.err .dot { background: #f87171; }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.3; }
@@ -152,9 +163,9 @@ INDEX_HTML = """
         <div class="icon">📚</div>
         <h1>English Vocabulary Bot</h1>
         <p class="subtitle">3480+ so'z, 24 mavzu, AI yordamida o'rganing</p>
-        <div class="status">
+        <div class="status {{ 'ok' if bot_running else 'err' }}">
             <span class="dot"></span>
-            Bot ishlayapti
+            {{ 'Bot ishlayapti' if bot_running else 'Bot ishlamayapti' }}
         </div>
         <div class="info">
             <div class="info-item">
@@ -184,16 +195,12 @@ INDEX_HTML = """
 
 @app.route("/")
 def home():
-    from datetime import datetime
     uptime = "0 min"
     if bot_start_time:
         diff = datetime.now() - bot_start_time
         hours, remainder = divmod(int(diff.total_seconds()), 3600)
         minutes = remainder // 60
-        if hours:
-            uptime = f"{hours} soat {minutes} min"
-        else:
-            uptime = f"{minutes} min"
+        uptime = f"{hours} soat {minutes} min" if hours else f"{minutes} min"
 
     db_path = Path(__file__).resolve().parent / "database" / "master_maximal_v14_openrouter_ready.db"
     db_size = "Noma'lum"
@@ -203,6 +210,7 @@ def home():
 
     return render_template_string(
         INDEX_HTML,
+        bot_running=bot_running,
         platform=platform.system(),
         python_version=platform.python_version(),
         uptime=uptime,
@@ -213,15 +221,33 @@ def home():
 
 @app.route("/health")
 def health():
-    from flask import jsonify
     if bot_running:
         return jsonify({"status": "ok"}), 200
-    return jsonify({"status": "starting"}), 503
+    return jsonify({"status": "starting", "error": bot_error}), 503
+
+
+@app.route("/debug")
+def debug():
+    info = {
+        "bot_running": bot_running,
+        "python": platform.python_version(),
+        "platform": platform.system(),
+        "cwd": os.getcwd(),
+        "env_keys": [k for k in os.environ.keys() if "TOKEN" not in k and "KEY" not in k],
+        "has_bot_token": bool(os.getenv("BOT_TOKEN")),
+        "bot_token_prefix": os.getenv("BOT_TOKEN", "")[:10] + "..." if os.getenv("BOT_TOKEN") else "MISSING",
+        "has_openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
+        "db_exists": Path(__file__).resolve().parent.joinpath("database", "master_maximal_v14_openrouter_ready.db").exists(),
+        "error": bot_error,
+    }
+    return jsonify(info)
 
 
 if __name__ == "__main__":
     t = threading.Thread(target=run_bot_background, daemon=True)
     t.start()
-    bot_running = True
+    import time
+    time.sleep(2)
+    print(f"Bot running: {bot_running}")
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
