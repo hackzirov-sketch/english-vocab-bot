@@ -1000,7 +1000,7 @@ async def handle_text(message: Message):
 
 async def main():
     print("🤖 Bot is starting...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, handle_signals=False)
 
 
 if __name__ == "__main__":
