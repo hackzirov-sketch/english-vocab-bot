@@ -834,7 +834,7 @@ def _format_grammar_pattern(pattern, section_title=None):
     lines.append("")
     lines.append(f"<b>Level:</b> {pattern['level']}")
     lines.append(f"<b>Category:</b> {pattern['category']}")
-    if pattern.get("ielts_part"):
+    if "ielts_part" in pattern and pattern["ielts_part"]:
         lines.append(f"<b>IELTS Part:</b> {pattern['ielts_part']}")
     lines.append("")
     lines.append(f"<b>Formula:</b>")
@@ -843,7 +843,7 @@ def _format_grammar_pattern(pattern, section_title=None):
     lines.append(f"<b>{pattern['meaning_uz']}</b>")
     lines.append("")
     lines.append(f"{pattern['explanation_uz'][:400]}")
-    if len(pattern.get("when_to_use_uz", "")) > 0:
+    if "when_to_use_uz" in pattern and pattern["when_to_use_uz"]:
         lines.append("")
         lines.append(f"<b>When to use:</b>")
         lines.append(f"{pattern['when_to_use_uz'][:300]}")
