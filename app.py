@@ -18,8 +18,22 @@ def run_bot_background():
     bot_start_time = datetime.now()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    import bot
-    loop.run_until_complete(bot.main())
+
+    import bot as bot_module
+
+    async def start():
+        await bot_module.bot.delete_webhook(drop_pending_updates=True)
+        print("Webhook deleted, starting polling...")
+        await bot_module.main()
+
+    try:
+        loop.run_until_complete(start())
+    except Exception as e:
+        print(f"Bot error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        bot_running = False
 
 
 INDEX_HTML = """
