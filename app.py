@@ -193,7 +193,7 @@ def home():
         python_version=platform.python_version(),
         uptime=uptime,
         db_size=db_size,
-        bot_username="YOUR_BOT_USERNAME",
+        bot_username="englishVinglishUzbekish_bot",
     )
 
 
