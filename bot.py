@@ -335,6 +335,7 @@ def gkb(wid, is_fav=False):
     btns = [[btn("🤖 AI Jumla", f"gen:{wid}"), btn("📝 Note", f"note:{wid}")]]
     if is_fav: btns[0].append(btn("💔", f"unfav:{wid}"))
     else: btns[0].append(btn("⭐", f"fav:{wid}"))
+    btns.append([btn("📚 Lug'atlar", "back_lugat")])
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
 def mkb(wid):
@@ -412,8 +413,13 @@ async def tp_cb(c: CallbackQuery):
     total = q1("SELECT COUNT(*) FROM vocab_enriched WHERE topic=?", (topic,))[0]
     if total == 0: return await c.message.answer(f"❌ <code>{topic}</code> bo'sh.")
     uid = c.from_user.id
-    seen = uq1("SELECT COUNT(*) as c FROM seen_words sw JOIN vocab_enriched v ON v.id=sw.word_id WHERE sw.user_id=? AND v.topic=?", (uid, topic))
-    pct_str = f" ({seen['c']}/{total} ko'rgan)" if seen and total else ""
+    wids = [r["id"] for r in q("SELECT id FROM vocab_enriched WHERE topic=?", (topic,))]
+    seen_c = 0
+    if wids:
+        ph = ",".join("?" * len(wids))
+        r = uq1(f"SELECT COUNT(*) as c FROM seen_words WHERE user_id=? AND word_id IN ({ph})", (uid, *wids))
+        if r: seen_c = r["c"]
+    pct_str = f" ({seen_c}/{total} ko'rgan)" if total else ""
     rows = q(f"SELECT id, english, uzbek FROM vocab_enriched WHERE topic=? ORDER BY english LIMIT {TOPIC_PP} OFFSET 0", (topic,))
     btns = []
     for i, r in enumerate(rows):
@@ -559,20 +565,30 @@ async def random_(m: Message):
 
 # ===== ALL WORDS =====
 ALL_PP = 10
+
+async def _send_dict_page(dest):
+    total = word_count()
+    rows = q(f"SELECT id, english, uzbek FROM vocab_enriched ORDER BY english LIMIT {ALL_PP} OFFSET 0")
+    if not rows:
+        await dest.answer("❌ So'z topilmadi.")
+        return
+    btns = []
+    for i, r in enumerate(rows):
+        btns.append([btn(f"{i+1}. {r['english']} — {r['uzbek']}", f"dict_w:{r['id']}")])
+    nav = [btn(f"➡️ {ALL_PP+1}-{min(ALL_PP*2,total)}", "dict_pg:1")]
+    btns.append(nav)
+    await dest.answer(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n1-{len(rows)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+
 @dp.message(Command("all_words"))
 @dp.message(F.text == "📚 Lug'atlar")
 async def all_words(m: Message):
-    try:
-        total = word_count()
-        rows = q(f"SELECT id, english, uzbek FROM vocab_enriched ORDER BY english LIMIT {ALL_PP} OFFSET 0")
-        if not rows: return await m.answer("❌ So'z topilmadi.")
-        btns = []
-        for i, r in enumerate(rows):
-            btns.append([btn(f"{i+1}. {r['english']} — {r['uzbek']}", f"dict_w:{r['id']}")])
-        nav = [btn(f"➡️ {ALL_PP+1}-{min(ALL_PP*2,total)}", "dict_pg:1")]
-        btns.append(nav)
-        await m.answer(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n1-{len(rows)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
-    except Exception as e: await m.answer(ERR_MSG)
+    try: await _send_dict_page(m)
+    except Exception: await m.answer(ERR_MSG)
+
+@dp.callback_query(F.data == "back_lugat")
+async def back_lugat_cb(c: CallbackQuery):
+    try: await _send_dict_page(c.message)
+    except Exception: await c.message.answer(ERR_MSG)
 
 @dp.callback_query(F.data.startswith("dict_pg:"))
 async def dict_page(c: CallbackQuery):
