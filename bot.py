@@ -332,16 +332,9 @@ def paginate(items, page, pp, prefix):
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
 def gkb(wid, is_fav=False):
-    btns = [[btn("🤖 AI Jumla", f"gen:{wid}"), btn("📝 Note", f"note:{wid}")]]
-    if is_fav: btns[0].append(btn("💔", f"unfav:{wid}"))
-    else: btns[0].append(btn("⭐", f"fav:{wid}"))
-    btns.append([btn("📚 Lug'atlar", "back_lugat")])
-    return InlineKeyboardMarkup(inline_keyboard=btns)
+    return InlineKeyboardMarkup(inline_keyboard=[[btn("🪄 Generate", f"gen:{wid}")]])
 
-def mkb(wid):
-    modes = [("☀️ Daily","daily"),("🎤 Speaking","speaking"),("✍️ Writing","writing"),
-             ("📄 Essay","essay"),("💼 Formal","formal")]
-    return InlineKeyboardMarkup(inline_keyboard=[[btn(l,f"mode:{wid}:{m}")] for l,m in modes])
+
 
 def qkb(qid, opts, correct):
     return InlineKeyboardMarkup(inline_keyboard=[[btn(o[:40], f"qa:{qid}:{i}")] for i,o in enumerate(opts)])
@@ -580,48 +573,10 @@ async def _send_dict_page(dest):
     await dest.answer(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n1-{len(rows)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
 
 @dp.message(F.text == "📚 Lug'atlar")
-async def lugat_menu(m: Message):
-    btns = [
-        [btn("📋 Mavzular bo'yicha", "lug_topics")],
-        [btn("🏷 Turlar bo'yicha", "lug_types")],
-        [btn("📚 Barcha so'zlar", "lug_all")],
-    ]
-    await m.answer("<b>📚 Lug'atlar</b>\n\nQaysi turdagi lug'atni ochmoqchisiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
-
-@dp.callback_query(F.data == "lug_topics")
-async def lug_topics_cb(c: CallbackQuery):
-    t = get_topics()
-    await c.message.edit_text(f"<b>📂 Mavzular</b> — {len(t)} ta, {word_count()} so'z", reply_markup=paginate(t, 0, 10, "tp"))
-    await c.answer()
-
-@dp.callback_query(F.data == "lug_types")
-async def lug_types_cb(c: CallbackQuery):
-    cts = q("SELECT type, COUNT(*) as cnt FROM vocab_enriched GROUP BY type ORDER BY cnt DESC")
-    btns = []
-    for r in cts:
-        btns.append([btn(f"{TYPES_MAP.get(r['type'], r['type'])} ({r['cnt']})", f"ty:{r['type']}")])
-    await c.message.edit_text("<b>🏷 So'z turlari</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
-    await c.answer()
-
-@dp.callback_query(F.data == "lug_all")
-async def lug_all_cb(c: CallbackQuery):
-    try: await _send_dict_page(c.message)
-    except Exception: await c.message.answer(ERR_MSG)
-
 @dp.message(Command("all_words"))
 async def all_words(m: Message):
     try: await _send_dict_page(m)
     except Exception: await m.answer(ERR_MSG)
-
-@dp.callback_query(F.data == "back_lugat")
-async def back_lugat_cb(c: CallbackQuery):
-    btns = [
-        [btn("📋 Mavzular bo'yicha", "lug_topics")],
-        [btn("🏷 Turlar bo'yicha", "lug_types")],
-        [btn("📚 Barcha so'zlar", "lug_all")],
-    ]
-    await c.message.edit_text("<b>📚 Lug'atlar</b>\n\nQaysi turdagi lug'atni ochmoqchisiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
-    await c.answer()
 
 @dp.callback_query(F.data.startswith("dict_pg:"))
 async def dict_page(c: CallbackQuery):
@@ -1530,23 +1485,14 @@ async def gen_cb(c: CallbackQuery):
     wid = safe_int(c.data.split(":")[1])
     row = q1("SELECT * FROM vocab_enriched WHERE id=?", (wid,))
     if not row: return await c.answer("❌", show_alert=True)
-    await c.answer(); await c.message.edit_reply_markup(reply_markup=None)
-    await c.message.answer(f"🤖 <b>{row['english']}</b> — rejim:", reply_markup=mkb(wid))
-
-@dp.callback_query(F.data.startswith("mode:"))
-async def mode_cb(c: CallbackQuery):
-    p = c.data.split(":"); wid, mode = safe_int(p[1]), p[2]
-    if wid is None: return await c.answer(ERR_ALERT, show_alert=True)
-    row = q1("SELECT * FROM vocab_enriched WHERE id=?", (wid,))
-    if not row: return await c.answer(ERR_ALERT, show_alert=True)
     await c.answer("⏳ AI..."); await c.message.edit_reply_markup(reply_markup=None)
-    r = await gen_ai(f"""Create ONE sentence using "{row['english']}" ({row['uzbek']}). Mode: {mode}. Topic: {row['topic']}, Level: {row['level']}. Return JSON: {{"sentence_en":"...","sentence_uz":"...","explanation_uz":"..."}}""")
+    r = await gen_ai(f"""Create ONE sentence using "{row['english']}" ({row['uzbek']}). Topic: {row['topic']}, Level: {row['level']}. Return JSON: {{"sentence_en":"...","sentence_uz":"..."}}""")
     if not r: return await c.message.answer(f"❌ AI xatosi.\n/gen {row['english']}")
     if r.startswith("```"): r = r.split("\n",1)[1] if "\n" in r else r[3:]
     if r.endswith("```"): r = r.rsplit("```",1)[0]
     try:
         res = json.loads(r.strip())
-        await c.message.answer(f"<b>🤖 AI ({mode})</b>\n\n<b>🇬🇧</b> {res.get('sentence_en','')}\n<b>🇺🇿</b> {res.get('sentence_uz','')}\n\n<b>💡</b> {res.get('explanation_uz','')}")
+        await c.message.answer(f"<b>🪄 {row['english']}</b>\n\n<b>🇬🇧</b> {res.get('sentence_en','')}\n<b>🇺🇿</b> {res.get('sentence_uz','')}")
     except (json.JSONDecodeError, KeyError): await c.message.answer(ERR_MSG)
 
 @dp.callback_query(F.data == "noop")
