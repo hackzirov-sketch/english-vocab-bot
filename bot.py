@@ -106,7 +106,7 @@ def ux(sql, p=None):
         c.commit()
 
 # ===== CACHE =====
-CACHE, CACHE_TTL = {}, 300
+CACHE, CACHE_TTL, CACHE_LOCK = {}, 300, threading.Lock()
 _CACHE_MAX = 200
 
 def cached(ttl=300):
@@ -114,13 +114,14 @@ def cached(ttl=300):
         def wrap(*a,**kw):
             k = fn.__name__
             n = datetime.now().timestamp()
-            if k in CACHE and n-CACHE[k]["ts"]<ttl: return CACHE[k]["val"]
-            v = fn(*a,**kw)
-            if len(CACHE) >= _CACHE_MAX:
-                oldest = min(CACHE, key=lambda x: CACHE[x]["ts"])
-                del CACHE[oldest]
-            CACHE[k]={"val":v,"ts":n}
-            return v
+            with CACHE_LOCK:
+                if k in CACHE and n-CACHE[k]["ts"]<ttl: return CACHE[k]["val"]
+                v = fn(*a,**kw)
+                if len(CACHE) >= _CACHE_MAX:
+                    oldest = min(CACHE, key=lambda x: CACHE[x]["ts"])
+                    del CACHE[oldest]
+                CACHE[k]={"val":v,"ts":n}
+                return v
         return wrap
     return deco
 @cached()
@@ -267,12 +268,15 @@ def parse_wrong(raw):
 def fmt_grammar(p, title=None):
     lines = []
     if title: lines.append(f"<b>📚 {title}</b>\n")
-    lines.append(f"<b>{p['title_en']}</b>\n🇺🇿 {p['title_uz']}\n")
-    lines.append(f"<b>Level:</b> {p['level']} | <b>Category:</b> {p['category']}")
-    if "ielts_part" in p and p["ielts_part"]: lines.append(f"<b>IELTS Part:</b> {p['ielts_part']}")
-    lines.append(f"\n<b>Formula:</b>\n<code>{p['formula']}</code>\n")
-    lines.append(f"<b>{p['meaning_uz']}</b>\n{_g(p,'explanation_uz')[:400] if _g(p,'explanation_uz') else ''}")
-    if "when_to_use_uz" in p and p["when_to_use_uz"]: lines.append(f"\n<b>When to use:</b>\n{p['when_to_use_uz'][:300]}")
+    lines.append(f"<b>{_g(p,'title_en','N/A')}</b>\n🇺🇿 {_g(p,'title_uz','N/A')}\n")
+    lines.append(f"<b>Level:</b> {_g(p,'level','?')} | <b>Category:</b> {_g(p,'category','?')}")
+    if _g(p,'ielts_part'): lines.append(f"<b>IELTS Part:</b> {p['ielts_part']}")
+    formula = _g(p,'formula','N/A')
+    lines.append(f"\n<b>Formula:</b>\n<code>{formula}</code>\n")
+    meaning = _g(p,'meaning_uz','')
+    expl = _g(p,'explanation_uz','')[:400]
+    lines.append(f"<b>{meaning}</b>\n{expl}" if meaning or expl else "")
+    if _g(p,'when_to_use_uz'): lines.append(f"\n<b>When to use:</b>\n{p['when_to_use_uz'][:300]}")
     ex = q("SELECT example_en,example_uz FROM grammar_examples WHERE pattern_id=? LIMIT 2", (p["id"],))
     if ex:
         lines.append("\n<b>Examples:</b>")
@@ -470,8 +474,9 @@ async def topic_cmd(m: Message):
         if not rows: return await m.answer(f"❌ <code>{t}</code> bo'yicha so'z yo'q.")
         await m.answer(f"📂 <b>{t}</b> — {len(rows)} ta:")
         uid = m.from_user.id
+        favs = _fav_set(uid)
         for i, r in enumerate(rows, 1):
-            fav = uq1("SELECT 1 FROM user_favorites WHERE user_id=? AND word_id=?", (uid, r["id"]))
+            fav = r["id"] in favs
             await m.answer(fmt_vocab(r, i), reply_markup=gkb(r["id"], fav))
             ux("INSERT INTO seen_words(user_id,word_id,seen_count) VALUES(?,?,1) ON CONFLICT(user_id,word_id) DO UPDATE SET seen_count=seen_count+1,last_seen=datetime('now')", (uid, r["id"]))
     except Exception as e: await m.answer(ERR_MSG)
@@ -622,8 +627,9 @@ async def search_(m: Message):
         if not rows: return await m.answer(f"❌ '{query_text}' bo'yicha topilmadi.")
         await m.answer(f"🔍 <b>{query_text}</b> — {len(rows)} ta:")
         uid = m.from_user.id
+        favs = _fav_set(uid)
         for i, r in enumerate(rows, 1):
-            fav = uq1("SELECT 1 FROM user_favorites WHERE user_id=? AND word_id=?", (uid, r["id"]))
+            fav = r["id"] in favs
             await m.answer(("⭐ " if fav else "")+fmt_vocab(r, i), reply_markup=gkb(r["id"], fav))
     except Exception as e: await m.answer(ERR_MSG)
 
@@ -795,6 +801,9 @@ match_sel = {}
 async def match_(m: Message):
     uid = m.from_user.id
     try:
+        if len(match_games) >= _MAX_SESSIONS:
+            match_games.clear()
+            match_sel.clear()
         rows = q("SELECT * FROM vocab_enriched ORDER BY RANDOM() LIMIT 4")
         if len(rows) < 4: return await m.answer("❌ Yetarli so'z yo'q.")
         pairs = [(r["english"], r["uzbek"]) for r in rows]
@@ -845,7 +854,6 @@ async def match_new(c: CallbackQuery):
     match_sel.pop(c.from_user.id, None)
     await match_next(c.message, c.from_user.id)
 
-match_sel = {}
 @dp.callback_query(F.data.startswith("match:"))
 async def match_cb(c: CallbackQuery):
     uid = c.from_user.id
@@ -954,6 +962,8 @@ level_tests = {}
 @dp.message(F.text == "🎯 Daraja test")
 async def lt_start(m: Message):
     uid = m.from_user.id
+    if len(level_tests) >= _MAX_SESSIONS:
+        level_tests.clear()
     rows = q("SELECT * FROM quiz_items ORDER BY RANDOM() LIMIT 20")
     if len(rows) < 20:
         rows = q("SELECT * FROM quiz_items ORDER BY RANDOM() LIMIT 10")
@@ -1185,7 +1195,7 @@ async def note_cmd(m: Message):
         ux("INSERT INTO user_notes(user_id,word_id,note) VALUES(?,?,?) ON CONFLICT(user_id,word_id) DO UPDATE SET note=?",
            (m.from_user.id, wid, note, note))
         await m.answer("✅ Eslatma saqlandi!")
-    except: await m.answer("❌ Noto'g'ri ID.")
+    except (ValueError, TypeError): await m.answer("❌ Noto'g'ri ID.")
 
 @dp.message(Command("note_del"))
 async def note_del(m: Message):
@@ -1194,7 +1204,7 @@ async def note_del(m: Message):
     try:
         ux("DELETE FROM user_notes WHERE user_id=? AND word_id=?", (m.from_user.id, int(p[1])))
         await m.answer("✅ Eslatma o'chirildi.")
-    except: await m.answer("❌ Xatolik.")
+    except (ValueError, TypeError): await m.answer("❌ Xatolik.")
 
 # ===== EXPORT =====
 @dp.message(Command("export"))
@@ -1219,11 +1229,11 @@ async def review_(m: Message):
             rows = uq("SELECT word_id FROM seen_words WHERE user_id=? ORDER BY RANDOM() LIMIT 5", (uid,))
             if not rows: return await m.answer("🔄 Takrorlash uchun so'z yo'q.\nTest ishlang yoki so'z qidiring.")
         ids = [r["word_id"] for r in rows]
+        srs_map = {r["word_id"]: r["srs_level"] if "srs_level" in r else 0 for r in rows}
         words = q(f"SELECT * FROM vocab_enriched WHERE id IN ({','.join('?'*len(ids))})", ids)
         await m.answer(f"🔄 <b>Takrorlash</b> ({len(words)} ta so'z) — SRS tizimi:")
         for i, r in enumerate(words, 1):
-            srs = uq1("SELECT srs_level FROM seen_words WHERE user_id=? AND word_id=?", (uid, r["id"]))
-            lvl = srs["srs_level"] if srs else 0
+            lvl = srs_map.get(r["id"], 0)
             intervals = {0:"🔴 1 kun",1:"🟠 3 kun",2:"🟡 7 kun",3:"🟢 14 kun",4:"🔵 30 kun",5:"💎 60 kun"}
             lbl = intervals.get(lvl, f"✅ {2**lvl} kun")
             await m.answer(f"{fmt_vocab(r, i)}\nSRS: {lbl}",
@@ -1300,7 +1310,7 @@ async def goal_(m: Message):
             g = max(1, min(100, int(p[1].strip())))
             ux("UPDATE user_stats SET daily_goal=? WHERE user_id=?", (g, m.from_user.id))
             await m.answer(f"✅ Kunlik maqsad {g} ta test qilib belgilandi!")
-        except: await m.answer("❌ /goal <son> (1-100)")
+        except (ValueError, TypeError): await m.answer("❌ /goal <son> (1-100)")
     else:
         goal, done = check_goal(m.from_user.id)
         await m.answer(f"🎯 <b>Kunlik maqsad</b>\n\nBajarildi: {done}/{goal}\n\n/goal <son> — o'zgartirish")
@@ -1349,7 +1359,7 @@ async def reminder_time(m: Message):
         datetime.strptime(t, "%H:%M")
         ux("UPDATE user_settings SET reminder_time=? WHERE user_id=?", (t, m.from_user.id))
         await m.answer(f"✅ Eslatma vaqti {t} ga o'zgartirildi!")
-    except: await m.answer("❌ Noto'g'ri format. HH:MM (masalan: 09:00)")
+    except (ValueError, TypeError): await m.answer("❌ Noto'g'ri format. HH:MM (masalan: 09:00)")
 
 # ===== GRAMMAR =====
 @dp.message(Command("grammar"))
@@ -1472,9 +1482,10 @@ async def gen_cb(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("mode:"))
 async def mode_cb(c: CallbackQuery):
-    p = c.data.split(":"); wid, mode = int(p[1]), p[2]
+    p = c.data.split(":"); wid, mode = safe_int(p[1]), p[2]
+    if wid is None: return await c.answer(ERR_ALERT, show_alert=True)
     row = q1("SELECT * FROM vocab_enriched WHERE id=?", (wid,))
-    if not row: return await c.answer("❌", show_alert=True)
+    if not row: return await c.answer(ERR_ALERT, show_alert=True)
     await c.answer("⏳ AI..."); await c.message.edit_reply_markup(reply_markup=None)
     r = await gen_ai(f"""Create ONE sentence using "{row['english']}" ({row['uzbek']}). Mode: {mode}. Topic: {row['topic']}, Level: {row['level']}. Return JSON: {{"sentence_en":"...","sentence_uz":"...","explanation_uz":"..."}}""")
     if not r: return await c.message.answer(f"❌ AI xatosi.\n/gen {row['english']}")
@@ -1531,23 +1542,30 @@ async def admin(m: Message):
         f"/broadcast <matn> — hammaga xabar yuborish\n"
         f"/user_stats <id> — foydalanuvchi statistikasi")
 
+RATE_LIMIT = {}
 @dp.message(Command("broadcast"))
 async def broadcast(m: Message):
     if m.from_user.id not in ADMIN_IDS: return await m.answer("❌ Ruxsat yo'q.")
+    now_t = _time.time()
+    if m.from_user.id in RATE_LIMIT and now_t - RATE_LIMIT[m.from_user.id] < 30:
+        return await m.answer("⏳ 30 soniya kutib, qayta urinib ko'ring.")
+    RATE_LIMIT[m.from_user.id] = now_t
     p = m.text.split(maxsplit=1)
     if len(p) < 2: return await m.answer("📢 /broadcast <matn>\nBarcha foydalanuvchilarga xabar yuborish.")
     text = p[1].strip()
-    users = uq("SELECT user_id FROM user_stats")
-    sent, failed = 0, 0
-    msg = await m.answer(f"📢 Xabar yuborilmoqda: {len(users)} ta foydalanuvchiga...")
-    for u in users:
-        try:
-            await bot.send_message(u["user_id"], f"📢 <b>Admin xabari</b>\n\n{text}")
-            sent += 1
-        except:
-            failed += 1
-        await asyncio.sleep(0.05)
-    await msg.edit_text(f"✅ Yuborildi: {sent} ta\n❌ Yetmadi: {failed} ta")
+    try:
+        users = uq("SELECT user_id FROM user_stats")
+        sent, failed = 0, 0
+        msg = await m.answer(f"📢 Xabar yuborilmoqda: {len(users)} ta foydalanuvchiga...")
+        for u in users:
+            try:
+                await bot.send_message(u["user_id"], f"📢 <b>Admin xabari</b>\n\n{text}")
+                sent += 1
+            except:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await msg.edit_text(f"✅ Yuborildi: {sent} ta\n❌ Yetmadi: {failed} ta")
+    except Exception as e: logger.error(f"Broadcast: {e}"); await m.answer(ERR_MSG)
 
 @dp.message(Command("user_stats"))
 async def admin_user_stats(m: Message):
@@ -1621,10 +1639,10 @@ Text: "{txt}"
                  "ORDER BY CASE WHEN english LIKE ? THEN 0 WHEN uzbek LIKE ? THEN 1 ELSE 2 END LIMIT 4", (pat, pat, pat, txt, txt))
         if rows:
             await m.answer(f"🔍 <b>{txt}</b> — {len(rows)} ta:")
+            favs = _fav_set(uid)
             for i, r in enumerate(rows, 1):
                 ux("INSERT INTO seen_words(user_id,word_id,seen_count) VALUES(?,?,1) ON CONFLICT(user_id,word_id) DO UPDATE SET seen_count=seen_count+1,last_seen=datetime('now')", (uid, r["id"]))
-                fav = uq1("SELECT 1 FROM user_favorites WHERE user_id=? AND word_id=?", (uid, r["id"]))
-                await m.answer(fmt_vocab(r, i), reply_markup=gkb(r["id"], fav))
+                await m.answer(fmt_vocab(r, i), reply_markup=gkb(r["id"], r["id"] in favs))
             add_activity(uid)
         else:
             r = await gen_ai(f"""User sent: "{txt}". If English-related, answer helpfully in Uzbek. Otherwise suggest /help. Short.""", 0.5, 300)
