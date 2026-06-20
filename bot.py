@@ -238,14 +238,12 @@ def fmt_grammar(p, title=None):
 
 def mk():
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📋 Mavzular"), KeyboardButton(text="🏷 Turlar"), KeyboardButton(text="📚 Lug'atlar"), KeyboardButton(text="🔍 Qidirish")],
-        [KeyboardButton(text="❓ Test"), KeyboardButton(text="📝 Maxsus test"), KeyboardButton(text="🎯 Daraja test")],
-        [KeyboardButton(text="🃏 Flashcard"), KeyboardButton(text="🧩 Match"), KeyboardButton(text="🔄 Takrorlash")],
+        [KeyboardButton(text="📋 Mavzular"), KeyboardButton(text="📚 Lug'atlar"), KeyboardButton(text="🔍 Qidirish"), KeyboardButton(text="🎲 Random")],
+        [KeyboardButton(text="❓ Test"), KeyboardButton(text="🃏 Flashcard"), KeyboardButton(text="🧩 Match"), KeyboardButton(text="🔄 Takrorlash")],
         [KeyboardButton(text="🤖 AI Jumla"), KeyboardButton(text="💬 AI Chat"), KeyboardButton(text="✍️ Writing")],
         [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🏅 Reyting"), KeyboardButton(text="🏆 Yutuqlar"), KeyboardButton(text="📅 Faoliyat")],
-        [KeyboardButton(text="⭐ Sevimlilar"), KeyboardButton(text="📖 Kundagi so'z"), KeyboardButton(text="🎲 Random"), KeyboardButton(text="📥 Yuklash")],
-        [KeyboardButton(text="📚 Grammar"), KeyboardButton(text="📈 Mavzular"), KeyboardButton(text="⚙️ Sozlamalar")],
-        [KeyboardButton(text="ℹ️ Yordam")],
+        [KeyboardButton(text="⭐ Sevimlilar"), KeyboardButton(text="📖 Kundagi so'z"), KeyboardButton(text="📥 Yuklash"), KeyboardButton(text="⚙️ Sozlamalar")],
+        [KeyboardButton(text="📚 Grammar"), KeyboardButton(text="ℹ️ Yordam")],
     ], resize_keyboard=True)
 
 def btn(t, d): return InlineKeyboardButton(text=t, callback_data=d)
@@ -332,6 +330,7 @@ async def tp_page(c: CallbackQuery):
     await c.message.edit_reply_markup(reply_markup=paginate(get_topics(), page, 10, "tp"))
     await c.answer()
 
+TOPIC_PP = 10
 @dp.callback_query(F.data.startswith("tp:"))
 async def tp_cb(c: CallbackQuery):
     idx = int(c.data.split(":")[1])
@@ -341,17 +340,56 @@ async def tp_cb(c: CallbackQuery):
     await c.answer()
     await c.message.edit_reply_markup(reply_markup=None)
     total = q1("SELECT COUNT(*) FROM vocab_enriched WHERE topic=?", (topic,))[0]
-    rows = q("SELECT * FROM vocab_enriched WHERE topic=? ORDER BY RANDOM() LIMIT 10", (topic,))
-    if not rows: return await c.message.answer(f"❌ <code>{topic}</code> bo'sh.")
+    if total == 0: return await c.message.answer(f"❌ <code>{topic}</code> bo'sh.")
     uid = c.from_user.id
     seen = uq1("SELECT COUNT(*) as c FROM seen_words sw JOIN vocab_enriched v ON v.id=sw.word_id WHERE sw.user_id=? AND v.topic=?", (uid, topic))
-    pct = f" ({seen['c']}/{total} ko'rgan)" if seen and total else ""
-    await c.message.answer(f"📂 <b>{topic}</b> — {total} so'z{pct}:")
-    for i, r in enumerate(rows, 1):
-        fav = uq1("SELECT 1 FROM user_favorites WHERE user_id=? AND word_id=?", (uid, r["id"]))
-        await c.message.answer(fmt_vocab(r, i), reply_markup=gkb(r["id"], fav))
-        ux("INSERT INTO seen_words(user_id,word_id,seen_count) VALUES(?,?,1) ON CONFLICT(user_id,word_id) DO UPDATE SET seen_count=seen_count+1,last_seen=datetime('now')", (uid, r["id"]))
-        ux("INSERT INTO topic_mastery(user_id,topic,seen,total) VALUES(?,?,1,?) ON CONFLICT(user_id,topic) DO UPDATE SET seen=seen+1,total=?", (uid, topic, total, total))
+    pct_str = f" ({seen['c']}/{total} ko'rgan)" if seen and total else ""
+    rows = q(f"SELECT id, english, uzbek FROM vocab_enriched WHERE topic=? ORDER BY english LIMIT {TOPIC_PP} OFFSET 0", (topic,))
+    btns = []
+    for i, r in enumerate(rows):
+        btns.append([btn(f"{i+1}. {r['english']} — {r['uzbek']}", f"tp_word:{r['id']}")])
+    nav = []
+    if TOPIC_PP < total: nav.append(btn("➡️", f"tp_w:{idx}:1"))
+    if nav: btns.append(nav)
+    await c.message.answer(f"📂 <b>{topic}</b>{pct_str}\n1-{len(rows)} / {total}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+
+@dp.callback_query(F.data.startswith("tp_w:"))
+async def tp_word_page(c: CallbackQuery):
+    p = c.data.split(":")
+    tidx, page = int(p[1]), int(p[2])
+    topics = get_topics()
+    if tidx >= len(topics): return await c.answer("❌", show_alert=True)
+    topic = topics[tidx]["topic"]
+    total = q1("SELECT COUNT(*) FROM vocab_enriched WHERE topic=?", (topic,))[0]
+    offset = page * TOPIC_PP
+    rows = q(f"SELECT id, english, uzbek FROM vocab_enriched WHERE topic=? ORDER BY english LIMIT {TOPIC_PP} OFFSET {offset}", (topic,))
+    if not rows: return await c.answer("❌", show_alert=True)
+    btns = []
+    for i, r in enumerate(rows):
+        btns.append([btn(f"{offset+i+1}. {r['english']} — {r['uzbek']}", f"tp_word:{r['id']}")])
+    nav = []
+    if page > 0: nav.append(btn("⬅️", f"tp_w:{tidx}:{page-1}"))
+    if offset + TOPIC_PP < total: nav.append(btn("➡️", f"tp_w:{tidx}:{page+1}"))
+    if nav: btns.append(nav)
+    start = offset + 1
+    end = min(offset + len(rows), total)
+    await c.message.edit_text(f"📂 <b>{topic}</b>\n{start}-{end} / {total}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("tp_word:"))
+async def tp_word_detail(c: CallbackQuery):
+    wid = int(c.data.split(":")[1])
+    row = q1("SELECT * FROM vocab_enriched WHERE id=?", (wid,))
+    if not row: return await c.answer("❌", show_alert=True)
+    uid = c.from_user.id
+    fav = uq1("SELECT 1 FROM user_favorites WHERE user_id=? AND word_id=?", (uid, wid))
+    await c.message.answer(fmt_ext(row), reply_markup=gkb(wid, fav))
+    ux("INSERT INTO seen_words(user_id,word_id,seen_count) VALUES(?,?,1) ON CONFLICT(user_id,word_id) DO UPDATE SET seen_count=seen_count+1,last_seen=datetime('now')", (uid, wid))
+    topic = row["topic"] if "topic" in row else ""
+    if topic:
+        total_t = q1("SELECT COUNT(*) FROM vocab_enriched WHERE topic=?", (topic,))[0]
+        ux("INSERT INTO topic_mastery(user_id,topic,seen,total) VALUES(?,?,1,?) ON CONFLICT(user_id,topic) DO UPDATE SET seen=seen+1,total=?", (uid, topic, total_t, total_t))
+    await c.answer()
 
 @dp.message(Command("topic"))
 async def topic_cmd(m: Message):
@@ -383,7 +421,7 @@ async def random_(m: Message):
     except Exception as e: await m.answer(f"❌ {e}")
 
 # ===== ALL WORDS =====
-ALL_PP = 5
+ALL_PP = 10
 @dp.message(Command("all_words"))
 @dp.message(F.text == "📚 Lug'atlar")
 async def all_words(m: Message):
@@ -394,7 +432,7 @@ async def all_words(m: Message):
         btns = []
         for i, r in enumerate(rows):
             btns.append([btn(f"{i+1}. {r['english']} — {r['uzbek']}", f"dict_w:{r['id']}")])
-        nav = [btn("➡️", "dict_pg:1")]
+        nav = [btn(f"➡️ {ALL_PP+1}-{min(ALL_PP*2,total)}", "dict_pg:1")]
         btns.append(nav)
         await m.answer(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n1-{len(rows)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
     except Exception as e: await m.answer(f"❌ {e}")
@@ -409,13 +447,15 @@ async def dict_page(c: CallbackQuery):
         if not rows: return await c.answer("❌", show_alert=True)
         btns = []
         for i, r in enumerate(rows):
-            btns.append([btn(f"{page*ALL_PP+i+1}. {r['english']} — {r['uzbek']}", f"dict_w:{r['id']}")])
+            btns.append([btn(f"{offset+i+1}. {r['english']} — {r['uzbek']}", f"dict_w:{r['id']}")])
         nav = []
-        if page > 0: nav.append(btn("⬅️", f"dict_pg:{page-1}"))
-        if offset + ALL_PP < total: nav.append(btn("➡️", f"dict_pg:{page+1}"))
+        if page > 0: nav.append(btn(f"⬅️ {offset-ALL_PP+1}-{offset}", f"dict_pg:{page-1}"))
+        if offset + ALL_PP < total:
+            n_end = min(offset + ALL_PP*2, total)
+            nav.append(btn(f"➡️ {offset+ALL_PP+1}-{n_end}", f"dict_pg:{page+1}"))
         if nav: btns.append(nav)
-        start = page * ALL_PP + 1
-        end = min(page * ALL_PP + len(rows), total)
+        start = offset + 1
+        end = min(offset + len(rows), total)
         await c.message.edit_text(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n{start}-{end}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
         await c.answer()
     except Exception as e: await c.answer(f"❌ {e}", show_alert=True)
