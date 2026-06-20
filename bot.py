@@ -502,8 +502,59 @@ async def search_(m: Message):
     except Exception as e: await m.answer(f"❌ {e}")
 
 # ===== AI GEN =====
+AI_PP = 10
 @dp.message(F.text == "🤖 AI Jumla")
-async def gp(m: Message): await m.answer("🤖 So'z kiriting:\n<code>abandon</code>")
+async def gp(m: Message):
+    try:
+        total = word_count()
+        rows = q(f"SELECT id, english, uzbek FROM vocab_enriched ORDER BY english LIMIT {AI_PP} OFFSET 0")
+        if not rows: return await m.answer("❌ So'z topilmadi.")
+        btns = []
+        for i, r in enumerate(rows):
+            btns.append([btn(f"{i+1}. {r['english']} — {r['uzbek']}", f"ai_w:{r['id']}")])
+        nav = [btn(f"➡️ {AI_PP+1}-{min(AI_PP*2,total)}", "ai_pg:1")]
+        btns.append(nav)
+        await m.answer(f"<b>🤖 AI Jumla</b> — so'zni tanlang yoki /gen <i>so'z</i> yozing\n1-{len(rows)} / {total}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    except Exception as e: await m.answer(f"❌ {e}")
+@dp.callback_query(F.data.startswith("ai_pg:"))
+async def ai_page(c: CallbackQuery):
+    page = int(c.data.split(":")[1])
+    offset = page * AI_PP
+    try:
+        total = word_count()
+        rows = q(f"SELECT id, english, uzbek FROM vocab_enriched ORDER BY english LIMIT {AI_PP} OFFSET {offset}")
+        if not rows: return await c.answer("❌", show_alert=True)
+        btns = []
+        for i, r in enumerate(rows):
+            btns.append([btn(f"{offset+i+1}. {r['english']} — {r['uzbek']}", f"ai_w:{r['id']}")])
+        nav = []
+        if page > 0: nav.append(btn(f"⬅️ {offset-AI_PP+1}-{offset}", f"ai_pg:{page-1}"))
+        if offset + AI_PP < total:
+            n_end = min(offset + AI_PP*2, total)
+            nav.append(btn(f"➡️ {offset+AI_PP+1}-{n_end}", f"ai_pg:{page+1}"))
+        if nav: btns.append(nav)
+        start = offset + 1
+        end = min(offset + len(rows), total)
+        await c.message.edit_text(f"<b>🤖 AI Jumla</b> — so'zni tanlang\n{start}-{end} / {total}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+        await c.answer()
+    except Exception as e: await c.answer(f"❌ {e}", show_alert=True)
+@dp.callback_query(F.data.startswith("ai_w:"))
+async def ai_gen_word(c: CallbackQuery):
+    wid = int(c.data.split(":")[1])
+    try:
+        row = q1("SELECT * FROM vocab_enriched WHERE id=?", (wid,))
+        if not row: return await c.answer("❌", show_alert=True)
+        await c.answer()
+        msg = await c.message.answer(f"⏳ <b>{row['english']}</b> ({row['uzbek']}) uchun AI yaratmoqda...")
+        r = await gen_ai(f"""Create ONE sentence using "{row['english']}" ({row['uzbek']}). Topic: {row['topic']}. Level: {row['level']}.
+Return JSON: {{"sentence_en":"...","sentence_uz":"...","explanation_uz":"...","word":"{row['english']}"}}""")
+        if not r: return await msg.edit_text("❌ AI xatosi.")
+        if r.startswith("```"): r = r.split("\n",1)[1] if "\n" in r else r[3:]
+        if r.endswith("```"): r = r.rsplit("```",1)[0]
+        res = json.loads(r.strip())
+        await msg.edit_text(f"<b>🤖 {res.get('word', row['english'])}</b>\n\n<b>🇬🇧</b> {res.get('sentence_en','')}\n<b>🇺🇿</b> {res.get('sentence_uz','')}\n\n<b>💡</b> {res.get('explanation_uz','')}")
+        add_xp(c.from_user.id, 2)
+    except Exception as e: await c.message.answer(f"❌ {e}")
 @dp.message(Command("gen"))
 async def gen_(m: Message):
     p = m.text.split(maxsplit=1)
