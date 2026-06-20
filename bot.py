@@ -209,10 +209,30 @@ def fmt_vocab(row, idx=None):
             f"📖 {_g(row,'definition')}\n📝 <i>{_g(row,'example_en')}</i>\n🇺🇿 {_g(row,'example_uz')}")
 
 def fmt_ext(row):
-    lines = [f"<b>📖 {row['english']}</b>", f"🇺🇿 <b>{row['uzbek']}</b>",
-             f"📂 Topic: {row['topic']}", f"🏷 Type: {row['type']}", f"📊 Level: {row['level']}"]
-    if "phonetic" in row and row["phonetic"]: lines.append(f"🔊 {row['phonetic']}")
-    lines.extend([f"📖 {_g(row,'definition')}", f"🇬🇧 {_g(row,'example_en')}", f"🇺🇿 {_g(row,'example_uz')}"])
+    lines = [
+        f"<b>📖 {row['english']}</b>",
+        f"🇺🇿 <b>{row['uzbek']}</b>",
+        f"📂 <b>Topic:</b> {row['topic']} | <b>Level:</b> {row['level']}",
+        f"🏷 <b>Type:</b> {row['type']} | <b>Sub:</b> {row.get('subtype','-')}",
+    ]
+    reg = _g(row,'register')
+    ua = _g(row,'usage_area')
+    if reg or ua:
+        parts = []
+        if reg: parts.append(f"<b>Register:</b> {reg}")
+        if ua: parts.append(f"<b>Use:</b> {ua}")
+        lines.append(" | ".join(parts))
+    lines.append(f"\n📖 <b>Definition:</b>\n{_g(row,'definition')}")
+    lines.append(f"🇬🇧 <b>Example:</b>\n<i>{_g(row,'example_en')}</i>")
+    lines.append(f"🇺🇿 <b>Misol:</b>\n<i>{_g(row,'example_uz')}</i>")
+    syn = _g(row,'synonyms_json')
+    if syn and syn != '[]':
+        try:
+            syns = json.loads(syn)
+            if syns: lines.append(f"🔗 <b>Synonyms:</b> {', '.join(syns)}")
+        except: pass
+    notes = _g(row,'notes')
+    if notes: lines.append(f"📌 {notes}")
     return "\n".join(lines)
 
 def parse_wrong(raw):
@@ -406,6 +426,70 @@ async def topic_cmd(m: Message):
             await m.answer(fmt_vocab(r, i), reply_markup=gkb(r["id"], fav))
             ux("INSERT INTO seen_words(user_id,word_id,seen_count) VALUES(?,?,1) ON CONFLICT(user_id,word_id) DO UPDATE SET seen_count=seen_count+1,last_seen=datetime('now')", (uid, r["id"]))
     except Exception as e: await m.answer(f"❌ {e}")
+
+# ===== TYPES =====
+TYPES_MAP = {
+    "collocation": "📍 Kollokatsiyalar", "idiom": "🎭 Idiomalar", "phrasal_verb": "🔗 Frazeologik fe'llar",
+    "academic_word": "🎓 Akademik so'zlar", "formal_word": "📜 Rasmiy so'zlar",
+    "essay_phrase": "✍️ Essay iboralar", "speaking_phrase": "🗣 Speaking iboralar",
+    "strong_verb": "💪 Kuchli fe'llar", "synonym_set": "🔀 Sinonimlar", "topic": "📌 Mavzu so'zlari"
+}
+@dp.message(Command("types"))
+async def types_list(m: Message):
+    try:
+        c = q("SELECT type, COUNT(*) as cnt FROM vocab_enriched GROUP BY type ORDER BY cnt DESC")
+        btns = []
+        for r in c:
+            label = TYPES_MAP.get(r["type"], r["type"])
+            btns.append([btn(f"{label} ({r['cnt']})", f"ty:{r['type']}")])
+        await m.answer("<b>🏷 So'z turlari</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    except Exception as e: await m.answer(f"❌ {e}")
+@dp.callback_query(F.data.startswith("ty:"))
+async def ty_cb(c: CallbackQuery):
+    typ = c.data.split(":", 1)[1]
+    await c.answer()
+    total = q1("SELECT COUNT(*) FROM vocab_enriched WHERE type=?", (typ,))[0]
+    if total == 0: return await c.message.answer(f"❌ <code>{typ}</code> bo'sh.")
+    rows = q(f"SELECT id, english, uzbek FROM vocab_enriched WHERE type=? ORDER BY english LIMIT {TOPIC_PP} OFFSET 0", (typ,))
+    btns = []
+    for i, r in enumerate(rows):
+        btns.append([btn(f"{i+1}. {r['english']} — {r['uzbek']}", f"ty_w:{r['id']}")])
+    label = TYPES_MAP.get(typ, typ)
+    nav = []
+    if TOPIC_PP < total: nav.append(btn("➡️", f"ty_pg:{typ}:1"))
+    if nav: btns.append(nav)
+    await c.message.edit_reply_markup(reply_markup=None)
+    await c.message.answer(f"🏷 <b>{label}</b> — {total} ta\n1-{len(rows)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+@dp.callback_query(F.data.startswith("ty_pg:"))
+async def ty_page(c: CallbackQuery):
+    p = c.data.split(":", 2)
+    typ, page = p[1], int(p[2])
+    offset = page * TOPIC_PP
+    total = q1("SELECT COUNT(*) FROM vocab_enriched WHERE type=?", (typ,))[0]
+    rows = q(f"SELECT id, english, uzbek FROM vocab_enriched WHERE type=? ORDER BY english LIMIT {TOPIC_PP} OFFSET {offset}", (typ,))
+    if not rows: return await c.answer("❌", show_alert=True)
+    btns = []
+    for i, r in enumerate(rows):
+        btns.append([btn(f"{offset+i+1}. {r['english']} — {r['uzbek']}", f"ty_w:{r['id']}")])
+    nav = []
+    if page > 0: nav.append(btn("⬅️", f"ty_pg:{typ}:{page-1}"))
+    if offset + TOPIC_PP < total: nav.append(btn("➡️", f"ty_pg:{typ}:{page+1}"))
+    if nav: btns.append(nav)
+    start = offset + 1
+    end = min(offset + len(rows), total)
+    label = TYPES_MAP.get(typ, typ)
+    await c.message.edit_text(f"🏷 <b>{label}</b>\n{start}-{end} / {total}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    await c.answer()
+@dp.callback_query(F.data.startswith("ty_w:"))
+async def ty_word(c: CallbackQuery):
+    wid = int(c.data.split(":")[1])
+    row = q1("SELECT * FROM vocab_enriched WHERE id=?", (wid,))
+    if not row: return await c.answer("❌", show_alert=True)
+    uid = c.from_user.id
+    fav = uq1("SELECT 1 FROM user_favorites WHERE user_id=? AND word_id=?", (uid, wid))
+    await c.message.answer(fmt_ext(row), reply_markup=gkb(wid, fav))
+    ux("INSERT INTO seen_words(user_id,word_id,seen_count) VALUES(?,?,1) ON CONFLICT(user_id,word_id) DO UPDATE SET seen_count=seen_count+1,last_seen=datetime('now')", (uid, wid))
+    await c.answer()
 
 # ===== RANDOM =====
 @dp.message(Command("random"))
