@@ -234,7 +234,7 @@ def fmt_ext(row):
         f"<b>📖 {row['english']}</b>",
         f"🇺🇿 <b>{row['uzbek']}</b>",
         f"📂 <b>Topic:</b> {row['topic']} | <b>Level:</b> {row['level']}",
-        f"🏷 <b>Type:</b> {row['type']} | <b>Sub:</b> {row.get('subtype','-')}",
+        f"🏷 <b>Type:</b> {row['type']} | <b>Sub:</b> {_g(row,'subtype','-')}",
     ]
     reg = _g(row,'register')
     ua = _g(row,'usage_area')
@@ -579,16 +579,49 @@ async def _send_dict_page(dest):
     btns.append(nav)
     await dest.answer(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n1-{len(rows)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
 
-@dp.message(Command("all_words"))
 @dp.message(F.text == "📚 Lug'atlar")
+async def lugat_menu(m: Message):
+    btns = [
+        [btn("📋 Mavzular bo'yicha", "lug_topics")],
+        [btn("🏷 Turlar bo'yicha", "lug_types")],
+        [btn("📚 Barcha so'zlar", "lug_all")],
+    ]
+    await m.answer("<b>📚 Lug'atlar</b>\n\nQaysi turdagi lug'atni ochmoqchisiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+
+@dp.callback_query(F.data == "lug_topics")
+async def lug_topics_cb(c: CallbackQuery):
+    t = get_topics()
+    await c.message.edit_text(f"<b>📂 Mavzular</b> — {len(t)} ta, {word_count()} so'z", reply_markup=paginate(t, 0, 10, "tp"))
+    await c.answer()
+
+@dp.callback_query(F.data == "lug_types")
+async def lug_types_cb(c: CallbackQuery):
+    cts = q("SELECT type, COUNT(*) as cnt FROM vocab_enriched GROUP BY type ORDER BY cnt DESC")
+    btns = []
+    for r in cts:
+        btns.append([btn(f"{TYPES_MAP.get(r['type'], r['type'])} ({r['cnt']})", f"ty:{r['type']}")])
+    await c.message.edit_text("<b>🏷 So'z turlari</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    await c.answer()
+
+@dp.callback_query(F.data == "lug_all")
+async def lug_all_cb(c: CallbackQuery):
+    try: await _send_dict_page(c.message)
+    except Exception: await c.message.answer(ERR_MSG)
+
+@dp.message(Command("all_words"))
 async def all_words(m: Message):
     try: await _send_dict_page(m)
     except Exception: await m.answer(ERR_MSG)
 
 @dp.callback_query(F.data == "back_lugat")
 async def back_lugat_cb(c: CallbackQuery):
-    try: await _send_dict_page(c.message)
-    except Exception: await c.message.answer(ERR_MSG)
+    btns = [
+        [btn("📋 Mavzular bo'yicha", "lug_topics")],
+        [btn("🏷 Turlar bo'yicha", "lug_types")],
+        [btn("📚 Barcha so'zlar", "lug_all")],
+    ]
+    await c.message.edit_text("<b>📚 Lug'atlar</b>\n\nQaysi turdagi lug'atni ochmoqchisiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    await c.answer()
 
 @dp.callback_query(F.data.startswith("dict_pg:"))
 async def dict_page(c: CallbackQuery):
@@ -1055,7 +1088,7 @@ async def qa_cb(c: CallbackQuery):
         await c.message.edit_reply_markup(reply_markup=None)
         await lt_next(c.message, uid, True)
         return await c.answer()
-    _update_quiz_stats(uid, row.get("vocab_id", row["id"]), row.get("topic"), ok)
+    _update_quiz_stats(uid, row["vocab_id"] if "vocab_id" in row else row["id"], row["topic"] if "topic" in row else None, ok)
     await c.message.edit_reply_markup(reply_markup=None)
     text = "✅ <b>To'g'ri!</b>" if ok else f"❌ <b>Noto'g'ri!</b>\n✅ <b>{correct}</b>"
     goal, done = check_goal(uid)
