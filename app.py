@@ -6,7 +6,7 @@ import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 
 app = Flask(__name__)
 
@@ -228,11 +228,13 @@ def health():
 
 @app.route("/debug")
 def debug():
+    admin_key = os.getenv("ADMIN_KEY")
+    if admin_key and request.args.get("key") != admin_key:
+        return jsonify({"error": "Unauthorized"}), 403
     info = {
         "bot_running": bot_running,
         "python": platform.python_version(),
         "platform": platform.system(),
-        "cwd": os.getcwd(),
         "has_bot_token": bool(os.getenv("BOT_TOKEN")),
         "has_openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
         "db_exists": Path(__file__).resolve().parent.joinpath("database", "master_maximal_v14_openrouter_ready.db").exists(),

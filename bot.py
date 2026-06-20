@@ -223,9 +223,6 @@ def _g(row, key, default=""):
 def _fav_set(uid):
     return {r["word_id"] for r in uq("SELECT word_id FROM user_favorites WHERE user_id=?", (uid,))}
 
-def _fav_check(uid, wid):
-    return uq1("SELECT 1 FROM user_favorites WHERE user_id=? AND word_id=?", (uid, wid))
-
 def fmt_vocab(row, idx=None):
     p = f"<b>{idx}.</b> " if idx else ""
     return (f"{p}<b>{row['english']}</b>\n🇺🇿 {row['uzbek']}\n"
@@ -254,7 +251,7 @@ def fmt_ext(row):
         try:
             syns = json.loads(syn)
             if syns: lines.append(f"🔗 <b>Synonyms:</b> {', '.join(syns)}")
-        except: pass
+        except (json.JSONDecodeError, TypeError): pass
     notes = _g(row,'notes')
     if notes: lines.append(f"📌 {notes}")
     return "\n".join(lines)
@@ -263,7 +260,7 @@ def parse_wrong(raw):
     try:
         p = json.loads(raw) if raw else []
         return [str(x) for x in p] if isinstance(p, list) else []
-    except: return []
+    except (json.JSONDecodeError, TypeError): return []
 
 def fmt_grammar(p, title=None):
     lines = []
@@ -300,7 +297,7 @@ ERR_ALERT = "❌ Xatolik."
 
 def safe_int(val, default=None):
     try: return int(val)
-    except: return default
+    except (ValueError, TypeError): return default
 
 def safe_json(text):
     if not text: return None
@@ -308,7 +305,7 @@ def safe_json(text):
     if t.startswith("```"): t = t.split("\n",1)[1] if "\n" in t else t[3:]
     if t.endswith("```"): t = t.rsplit("```",1)[0]
     try: return json.loads(t.strip())
-    except: return None
+    except (json.JSONDecodeError, ValueError, TypeError): return None
 
 def safe_send(msg, text, **kw):
     if len(text) > MAX_MSG: text = text[:MAX_MSG-100] + "\n\n... (truncated)"
@@ -399,6 +396,7 @@ async def topics(m: Message):
 @dp.callback_query(F.data.startswith("tp_pg:"))
 async def tp_page(c: CallbackQuery):
     page = safe_int(c.data.split(":")[1])
+    if page is None: return await c.answer(ERR_ALERT, show_alert=True)
     await c.message.edit_reply_markup(reply_markup=paginate(get_topics(), page, 10, "tp"))
     await c.answer()
 
@@ -936,7 +934,9 @@ async def cq_start(m: Message):
 
 @dp.callback_query(F.data.startswith("cq_pg:"))
 async def cq_page(c: CallbackQuery):
-    await c.message.edit_reply_markup(reply_markup=paginate(get_topics(), safe_int(c.data.split(":")[1]), 10, "cq"))
+    pg = safe_int(c.data.split(":")[1])
+    if pg is None: return await c.answer(ERR_ALERT, show_alert=True)
+    await c.message.edit_reply_markup(reply_markup=paginate(get_topics(), pg, 10, "cq"))
     await c.answer()
 
 @dp.callback_query(F.data.startswith("cq:"))
@@ -1368,9 +1368,13 @@ async def grammar(m: Message):
     try:
         sections = q("SELECT * FROM grammar_sections ORDER BY display_order")
         if not sections: return await m.answer("Grammar topilmadi.")
+        codes = [s["code"] for s in sections]
+        placeholders = ",".join("?" * len(codes))
+        counts = {r["section_code"]: r["cnt"] for r in q(
+            f"SELECT section_code, COUNT(*) as cnt FROM grammar_patterns WHERE section_code IN ({placeholders}) GROUP BY section_code", codes)}
         lines = ["<b>📚 Grammar Sections</b>\n"]
         for s in sections:
-            pc = q1("SELECT COUNT(*) FROM grammar_patterns WHERE section_code=?", (s["code"],))[0]
+            pc = counts.get(s["code"], 0)
             lines.append(f"  • <b>{s['title_en']}</b> — {pc} patterns")
         lines.append("\n/grammar_browse — Barcha patterns\n/grammar_part1, /grammar_part2, /grammar_part3\n/grammar_quiz\n/check_grammar")
         await m.answer("\n".join(lines), reply_markup=mk())
@@ -1494,7 +1498,7 @@ async def mode_cb(c: CallbackQuery):
     try:
         res = json.loads(r.strip())
         await c.message.answer(f"<b>🤖 AI ({mode})</b>\n\n<b>🇬🇧</b> {res.get('sentence_en','')}\n<b>🇺🇿</b> {res.get('sentence_uz','')}\n\n<b>💡</b> {res.get('explanation_uz','')}")
-    except: await c.message.answer(r)
+    except (json.JSONDecodeError, KeyError): await c.message.answer(ERR_MSG)
 
 @dp.callback_query(F.data == "noop")
 async def noop(c: CallbackQuery): await c.answer()
@@ -1517,7 +1521,7 @@ async def inline_query(inline_q: types.InlineQuery):
                 input_message_content=InputTextMessageContent(fmt_vocab(r)),
                 reply_markup=gkb(r["id"])))
         await inline_q.answer(results[:20], cache_time=60, is_personal=True)
-    except: await inline_q.answer([], cache_time=60, is_personal=True)
+    except Exception: await inline_q.answer([], cache_time=60, is_personal=True)
 
 # ===== ADMIN =====
 import time as _time
@@ -1532,17 +1536,24 @@ async def admin(m: Message):
     writing = uq1("SELECT COUNT(*) as c FROM writing_log")["c"]
     today_act = uq1("SELECT COUNT(*) as c FROM user_activity WHERE date=?", (date.today().isoformat(),))["c"]
     uptime = int(_time.time())
-    await m.answer(f"<b>👑 Admin Panel</b>\n\n"
-        f"Users: {users}\nActive today: {today_act}\n"
-        f"Favorites: {favs}\nSeen words: {seen}\n"
-        f"Notes: {notes}\nWriting: {writing}\n"
-        f"Activities: {act}\n"
-        f"DB: {DB_PATH.stat().st_size/1024/1024:.1f} MB\n"
-        f"User DB: {Path(__file__).resolve().parent.joinpath('user_data.db').stat().st_size/1024:.1f} KB\n\n"
-        f"/broadcast <matn> — hammaga xabar yuborish\n"
-        f"/user_stats <id> — foydalanuvchi statistikasi")
+    try:
+        db_size = f"{DB_PATH.stat().st_size/1024/1024:.1f} MB" if DB_PATH.exists() else "N/A"
+        user_db_path = Path(__file__).resolve().parent.joinpath('user_data.db')
+        user_db_size = f"{user_db_path.stat().st_size/1024:.1f} KB" if user_db_path.exists() else "N/A"
+        await m.answer(f"<b>👑 Admin Panel</b>\n\n"
+            f"Users: {users}\nActive today: {today_act}\n"
+            f"Favorites: {favs}\nSeen words: {seen}\n"
+            f"Notes: {notes}\nWriting: {writing}\n"
+            f"Activities: {act}\n"
+            f"DB: {db_size}\n"
+            f"User DB: {user_db_size}\n\n"
+            f"/broadcast <matn> — hammaga xabar yuborish\n"
+            f"/user_stats <id> — foydalanuvchi statistikasi")
+    except Exception as e: await m.answer(ERR_MSG)
 
 RATE_LIMIT = {}
+RATE_LIMIT_MAX = {}
+_MAX_BROADCAST = 5000
 @dp.message(Command("broadcast"))
 async def broadcast(m: Message):
     if m.from_user.id not in ADMIN_IDS: return await m.answer("❌ Ruxsat yo'q.")
@@ -1555,13 +1566,15 @@ async def broadcast(m: Message):
     text = p[1].strip()
     try:
         users = uq("SELECT user_id FROM user_stats")
+        if len(users) > _MAX_BROADCAST:
+            return await m.answer(f"❌ Juda ko'p foydalanuvchi ({len(users)}). Cheklov: {_MAX_BROADCAST}")
         sent, failed = 0, 0
         msg = await m.answer(f"📢 Xabar yuborilmoqda: {len(users)} ta foydalanuvchiga...")
         for u in users:
             try:
                 await bot.send_message(u["user_id"], f"📢 <b>Admin xabari</b>\n\n{text}")
                 sent += 1
-            except:
+            except Exception:
                 failed += 1
             await asyncio.sleep(0.05)
         await msg.edit_text(f"✅ Yuborildi: {sent} ta\n❌ Yetmadi: {failed} ta")
@@ -1629,7 +1642,7 @@ Text: "{txt}"
                 if res.get("suggestions_uz"): reply += f"\n<b>📝</b> {res['suggestions_uz']}"
                 await m.answer(reply); add_xp(uid, 5)
                 return
-            except: pass
+            except (json.JSONDecodeError, KeyError, IndexError): pass
         await m.answer("✍️ Writing tekshirishda xatolik. /writing bilan qayta urinib ko'ring.")
         return
     # Word lookup
@@ -1669,7 +1682,8 @@ async def run_scheduled_reminders():
                                 f"Bajarilgan: {done} ta\n\n"
                                 f"🏃 Davom eting! /quiz")
                             ux("UPDATE user_settings SET last_reminder_date=? WHERE user_id=?", (today, u["user_id"]))
-                        except: pass
+                        except Exception:
+                            pass
             # Clean stale sessions every minute
             now_dt = datetime.now()
             stale_chat = [uid for uid, msgs in list(chat_sessions.items()) if len(msgs) <= 1]
