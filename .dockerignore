@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+.env
+user_data.db
+.git
+.gitignore
+README.md
+run_bot.bat
