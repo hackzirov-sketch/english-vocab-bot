@@ -11,7 +11,7 @@ from aiogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton,
     Message, CallbackQuery, InputFile, InlineQueryResultArticle,
-    InputTextMessageContent,
+    InputTextMessageContent, WebAppInfo,
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -23,6 +23,7 @@ ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+WEB_APP_URL = os.getenv("WEB_APP_URL", "")
 DB_PATH = Path(__file__).resolve().parent / "database" / "master_maximal_v14_openrouter_ready.db"
 if not BOT_TOKEN: raise RuntimeError("BOT_TOKEN is missing in bot/.env")
 
@@ -281,14 +282,17 @@ def fmt_grammar(p, title=None):
     return "\n".join(lines)
 
 def mk():
-    return ReplyKeyboardMarkup(keyboard=[
+    rows = [
         [KeyboardButton(text="📋 Mavzular"), KeyboardButton(text="📚 Lug'atlar"), KeyboardButton(text="🔍 Qidirish"), KeyboardButton(text="🎲 Random")],
         [KeyboardButton(text="❓ Test"), KeyboardButton(text="🃏 Flashcard"), KeyboardButton(text="🧩 Match"), KeyboardButton(text="🔄 Takrorlash")],
         [KeyboardButton(text="🤖 AI Jumla"), KeyboardButton(text="💬 AI Chat"), KeyboardButton(text="✍️ Writing")],
         [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🏅 Reyting"), KeyboardButton(text="🏆 Yutuqlar"), KeyboardButton(text="📅 Faoliyat")],
         [KeyboardButton(text="⭐ Sevimlilar"), KeyboardButton(text="📖 Kundagi so'z"), KeyboardButton(text="📥 Yuklash"), KeyboardButton(text="⚙️ Sozlamalar")],
         [KeyboardButton(text="📚 Grammar"), KeyboardButton(text="ℹ️ Yordam")],
-    ], resize_keyboard=True)
+    ]
+    if WEB_APP_URL.startswith("https://"):
+        rows.insert(0, [KeyboardButton(text="🌐 Web App", web_app=WebAppInfo(url=WEB_APP_URL))])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 MAX_MSG = 4096
 MAX_CB = 64
@@ -376,7 +380,20 @@ async def help_(m: Message):
         "/export — Sevimlilarni yuklash\n/settings — Sozlamalar\n\n"
         "<b>📚 Grammar:</b>\n"
         "/grammar — Grammar sections\n/grammar_browse — Barcha patterns\n"
-        "/grammar_part1, /grammar_part2, /grammar_part3\n/grammar_quiz", reply_markup=mk())
+        "/grammar_part1, /grammar_part2, /grammar_part3\n/grammar_quiz\n\n"
+        "<b>🌐 Web App:</b>\n/web — Web appni ochish", reply_markup=mk())
+
+@dp.message(Command("web"))
+@dp.message(F.text == "🌐 Web App")
+async def web_app_(m: Message):
+    if not WEB_APP_URL.startswith("https://"):
+        return await m.answer("Web App URL hali sozlanmagan. Deploydan keyin bot/.env ichiga WEB_APP_URL qo'shing.")
+    await m.answer(
+        "<b>🌐 English Vocab Master Web App</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Web Appni ochish", web_app=WebAppInfo(url=WEB_APP_URL))]
+        ]),
+    )
 
 # ===== TOPICS =====
 @dp.message(Command("topics"))
@@ -559,18 +576,29 @@ async def random_(m: Message):
 # ===== ALL WORDS =====
 ALL_PP = 10
 
+def _dict_page_text(rows, total, start):
+    lines = [f"<b>📚 Barcha lug'atlar</b> ({total} ta)", f"{start}-{start + len(rows) - 1}:\n"]
+    for i, r in enumerate(rows, start):
+        lines.append(
+            f"<b>{i}. {r['english']}</b> — {r['uzbek']}\n"
+            f"📝 <i>{_g(r, 'example_en', 'Example mavjud emas')}</i>\n"
+            f"🇺🇿 {_g(r, 'example_uz', '')}"
+        )
+    lines.append("\nPastdagi raqamni bosib to'liq ma'lumotni oching.")
+    return "\n\n".join(lines)
+
 async def _send_dict_page(dest):
     total = word_count()
-    rows = q(f"SELECT id, english, uzbek FROM vocab_enriched ORDER BY english LIMIT {ALL_PP} OFFSET 0")
+    rows = q(f"SELECT * FROM vocab_enriched ORDER BY id LIMIT {ALL_PP} OFFSET 0")
     if not rows:
         await dest.answer("❌ So'z topilmadi.")
         return
     btns = []
     for i, r in enumerate(rows):
-        btns.append([btn(f"{i+1}. {r['english']} — {r['uzbek']}", f"dict_w:{r['id']}")])
+        btns.append([btn(f"{i+1}. {r['english']}", f"dict_w:{r['id']}")])
     nav = [btn(f"➡️ {ALL_PP+1}-{min(ALL_PP*2,total)}", "dict_pg:1")]
     btns.append(nav)
-    await dest.answer(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n1-{len(rows)}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+    await dest.answer(_dict_page_text(rows, total, 1), reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
 
 @dp.message(F.text == "📚 Lug'atlar")
 @dp.message(Command("all_words"))
@@ -584,11 +612,11 @@ async def dict_page(c: CallbackQuery):
     offset = page * ALL_PP
     try:
         total = word_count()
-        rows = q(f"SELECT id, english, uzbek FROM vocab_enriched ORDER BY english LIMIT {ALL_PP} OFFSET {offset}")
+        rows = q(f"SELECT * FROM vocab_enriched ORDER BY id LIMIT {ALL_PP} OFFSET {offset}")
         if not rows: return await c.answer("❌", show_alert=True)
         btns = []
         for i, r in enumerate(rows):
-            btns.append([btn(f"{offset+i+1}. {r['english']} — {r['uzbek']}", f"dict_w:{r['id']}")])
+            btns.append([btn(f"{offset+i+1}. {r['english']}", f"dict_w:{r['id']}")])
         nav = []
         if page > 0: nav.append(btn(f"⬅️ {offset-ALL_PP+1}-{offset}", f"dict_pg:{page-1}"))
         if offset + ALL_PP < total:
@@ -596,8 +624,7 @@ async def dict_page(c: CallbackQuery):
             nav.append(btn(f"➡️ {offset+ALL_PP+1}-{n_end}", f"dict_pg:{page+1}"))
         if nav: btns.append(nav)
         start = offset + 1
-        end = min(offset + len(rows), total)
-        await c.message.edit_text(f"<b>📚 Barcha lug'atlar</b> ({total} ta)\n{start}-{end}:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+        await c.message.edit_text(_dict_page_text(rows, total, start), reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
         await c.answer()
     except Exception as e: await c.answer(ERR_MSG, show_alert=True)
 
